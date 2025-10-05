@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>障害物回避ゲーム (最終版)</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: sans-serif;
+            /* タッチ操作時に意図しないスクロールを防ぐ */
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        #gameCanvas {
+            border: 2px solid #555;
+            background-color: #1a1a1a;
+        }
+        #scoreDisplay {
+            margin-bottom: 10px;
+            font-size: 28px;
+            font-weight: bold;
+            color: #333;
+            text-align: center;
+        }
+        #messageDisplay {
+            color: yellow;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 22px;
+            font-weight: bold;
+            position: absolute;
+            z-index: 10; /* Canvasの上に表示 */
+            visibility: hidden;
+            white-space: pre-line; /* 改行を有効にする */
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        /* モバイル用コントロール */
+        #controls {
+            display: flex;
+            justify-content: space-around;
+            width: 250px;
+            margin-top: 20px;
+        }
+
+        .control-button {
+            background-color: #cc0000;
+            color: white;
+            width: 100px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            border-radius: 10px;
+            user-select: none;
+            touch-action: manipulation;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
+        }
+        
+        .control-button:active {
+            background-color: #990000;
+            box-shadow: none;
+        }
+
+        /* 広告バナー */
+        #adBanner {
+            margin-top: 15px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: #fff;
+            width: 380px;
+            text-align: center;
+            visibility: hidden;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="scoreDisplay">タイムスコア: 0.00s | ハイスコア: 0.00s</div>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+    <div id="messageDisplay">ゲームオーバー！</div>
+    
+    <div id="controls">
+        <div id="left" class="control-button">◀ 左</div>
+        <div id="right" class="control-button">右 ▶</div>
+    </div>
+    
+    <div id="adBanner">
+        <a href="https://google.com/" target="_blank" style="text-decoration: none; color: #cc0000; font-weight: bold;">
+            【広告スペース】あなたの次の作品はこちら！ 🚀
+        </a>
+    </div>
+
+    <script>
+        // ----------------------------------------------------
+        // 1. 初期設定と変数
+        // ----------------------------------------------------
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const messageDisplay = document.getElementById('messageDisplay');
+        const adBanner = document.getElementById('adBanner');
+
+        let isGameOver = false;
+        let startTime = Date.now();
+        let score = 0;
+        let highScore = 0;
+        let keys = {};
+        let gameSpeed = 1.0;
+        
+        // ゲーム定数
+        const BASE_GENERATION_INTERVAL = 50; // ブロックの基本生成間隔 (50フレーム)
+        const MIN_GENERATION_INTERVAL = 10; // 最小生成間隔 (10フレーム)
+
+        // プレイヤー設定
+        let player = {
+            x: canvas.width / 2 - 20,
+            y: canvas.height - 40,
+            width: 40,
+            height: 40,
+            color: 'white',
+            speed: 6
+        };
+
+        let obstacles = [];
+        let obstacleGenerationTimer = 0;
+
+        // ハイスコアの初期ロード
+        loadHighScore();
+
+        /**
+         * ハイスコアをブラウザのLocalStorageから読み込む
+         */
+        function loadHighScore() {
+            const savedScore = localStorage.getItem('avoidGameHighScore');
+            if (savedScore) {
+                highScore = parseFloat(savedScore);
+            }
+        }
+
+        /**
+         * ハイスコアをブラウザのLocalStorageに保存する
+         */
+        function saveHighScore() {
+            localStorage.setItem('avoidGameHighScore', highScore.toFixed(2));
+        }
+
+        // ----------------------------------------------------
+        // 2. イベントリスナーとリスタート機能
+        // ----------------------------------------------------
+        
+        // キーボード操作
+        document.addEventListener('keydown', (e) => { keys[e.key] = true; });
+        document.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+        // モバイルボタン操作
+        const buttons = document.querySelectorAll('.control-button');
+        buttons.forEach(button => {
+            const direction = button.id;
+            const handleStart = (e) => {
+                e.preventDefault();
+                if (direction === 'left') keys['ArrowLeft'] = true;
+                if (direction === 'right') keys['ArrowRight'] = true;
+            };
+            const handleEnd = (e) => {
+                e.preventDefault();
+                if (direction === 'left') keys['ArrowLeft'] = false;
+                if (direction === 'right') keys['ArrowRight'] = false;
+            };
+            button.addEventListener('touchstart', handleStart);
+            button.addEventListener('mousedown', handleStart);
+            button.addEventListener('touchend', handleEnd);
+            button.addEventListener('mouseup', handleEnd);
+            button.addEventListener('mouseleave', (e) => {
+                if (e.buttons === 0) handleEnd(e);
+            });
+        });
+
+        // 画面クリック/タップでリスタート
+        canvas.addEventListener('click', restartGame);
+        document.getElementById('controls').addEventListener('click', restartGame);
+
+        /**
+         * ゲームを初期状態に戻して再スタート
+         */
+        function restartGame() {
+            if (!isGameOver) return;
+
+            isGameOver = false;
+            startTime = Date.now();
+            gameSpeed = 1.0;
+            obstacles = [];
+            obstacleGenerationTimer = 0;
+            player.x = canvas.width / 2 - player.width / 2;
+
+            messageDisplay.style.visibility = 'hidden';
+            adBanner.style.visibility = 'hidden'; // 広告を非表示
+            
+            gameLoop();
+        }
+
+        // ----------------------------------------------------
+        // 3. ゲームロジック関数
+        // ----------------------------------------------------
+
+        /**
+         * 衝突判定
+         */
+        function checkCollision(obj1, obj2) {
+            return obj1.x < obj2.x + obj2.width &&
+                   obj1.x + obj1.width > obj2.x &&
+                   obj1.y < obj2.y + obj2.height &&
+                   obj1.y + obj1.height > obj2.y;
+        }
+
+        /**
+         * 新しい障害物をランダムに生成
+         */
+        function createObstacle() {
+            const blockWidth = Math.random() * 20 + 20;
+            const blockHeight = Math.random() * 20 + 20;
+            const randomX = Math.random() * (canvas.width - blockWidth);
+            
+            // 縦横の速度をgameSpeedに連動させる
+            let dx = (Math.random() - 0.5) * 2 * gameSpeed * 0.7; 
+            let dy = (Math.random() * 2 + 1) * gameSpeed; 
+
+            obstacles.push({
+                x: randomX,
+                y: -blockHeight,
+                width: blockWidth,
+                height: blockHeight,
+                color: '#FF0000',
+                dx: dx,
+                dy: dy
+            });
+        }
+
+        // ----------------------------------------------------
+        // 4. 更新処理 (メインロジック)
+        // ----------------------------------------------------
+
+        function update() {
+            if (isGameOver) return;
+
+            // タイムスコアの更新
+            score = (Date.now() - startTime) / 1000;
+            scoreDisplay.textContent = `タイムスコア: ${score.toFixed(2)}s | ハイスコア: ${highScore.toFixed(2)}s`;
+            
+            // 難易度上昇 (10秒ごとにスピードが0.5ずつ上がる)
+            gameSpeed = 1.0 + Math.floor(score / 10) * 0.5;
+
+            // プレイヤーの移動
+            if (keys['ArrowLeft'] || keys['a']) {
+                player.x -= player.speed;
+            }
+            if (keys['ArrowRight'] || keys['d']) {
+                player.x += player.speed;
+            }
+            player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+
+
+            // 障害物の生成頻度 (スピードに連動して増加)
+            const currentInterval = Math.max(MIN_GENERATION_INTERVAL, BASE_GENERATION_INTERVAL / gameSpeed);
+            
+            obstacleGenerationTimer++;
+            if (obstacleGenerationTimer >= currentInterval) {
+                createObstacle();
+                obstacleGenerationTimer = 0;
+            }
+
+            // 障害物の位置更新、衝突判定
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                
+                obs.x += obs.dx;
+                obs.y += obs.dy;
+
+                // 壁の跳ね返り (横方向)
+                if (obs.x < 0 || obs.x + obs.width > canvas.width) {
+                    obs.dx *= -1;
+                    obs.x = Math.max(0, Math.min(canvas.width - obs.width, obs.x));
+                }
+                
+                // 衝突判定 (当たったらゲームオーバー)
+                if (checkCollision(player, obs)) {
+                    isGameOver = true;
+                    
+                    // ハイスコア更新とメッセージ表示
+                    if (score > highScore) {
+                        highScore = score;
+                        saveHighScore();
+                        messageDisplay.textContent = `NEW RECORD! ${score.toFixed(2)}s\n\nクリックまたはタップで再挑戦`;
+                    } else {
+                        messageDisplay.textContent = `ゲームオーバー！生存時間: ${score.toFixed(2)}s\nハイスコア: ${highScore.toFixed(2)}s\n\nクリックまたはタップで再挑戦`;
+                    }
+                    
+                    messageDisplay.style.visibility = 'visible';
+                    adBanner.style.visibility = 'visible'; // 広告を表示
+                    return;
+                }
+                
+                // 画面外に出た障害物の削除
+                if (obs.y > canvas.height) {
+                    obstacles.splice(i, 1);
+                }
+            }
+        }
+
+        // ----------------------------------------------------
+        // 5. 描画処理
+        // ----------------------------------------------------
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // プレイヤーを描画
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+
+            // 障害物を描画
+            obstacles.forEach(obs => {
+                ctx.fillStyle = obs.color;
+                ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+            });
+        }
+
+        // ----------------------------------------------------
+        // 6. ゲームループ
+        // ----------------------------------------------------
+
+        function gameLoop() {
+            update();
+            draw();
+            
+            if (!isGameOver) {
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // ゲーム開始！
+        gameLoop();
+    </script>
+</body>
+</html>
